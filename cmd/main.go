@@ -24,6 +24,12 @@ func main() {
     requestFullSync := flag.Bool("request-full-sync", false, "Request full (1 year) history sync when logging in")
     flag.Parse()
 
+    logLevel := "INFO"
+    if *debugLogs {
+        logLevel = "DEBUG"
+    }
+    logger := log.New(os.Stdout, "", log.LstdFlags)
+
     args := flag.Args()
     if len(args) > 0 {
         cmd := args[0]
