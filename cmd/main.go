@@ -8,7 +8,6 @@ import (
     "strings"
     "syscall"
     "time"
-    "wahelper/handlers"
     "wahelper/server"
     "wahelper/whatsapp"
 
