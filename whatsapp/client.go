@@ -551,3 +551,70 @@ func (c *Client) SendMessage(recipientJID string, message string) error {
     c.Logger.Infof("Message sent to %s (server timestamp: %s)", recipientJID, resp.Timestamp)
     return nil
 }
+
+func (c *Client) HandleCommand(cmd string, args []string) {
+    switch cmd {
+    case "send":
+        if len(args) < 2 {
+            c.Logger.Error("Usage: send <jid> <message>")
+            return
+        }
+        recipientJID := args[0]
+        message := strings.Join(args[1:], " ")
+        err := c.SendMessage(recipientJID, message)
+        if err != nil {
+            c.Logger.Errorf("Failed to send message: %v", err)
+        }
+    case "pair-phone":
+        if len(args) < 1 {
+            c.Logger.Error("Usage: pair-phone <number>")
+            return
+        }
+        if !c.WAClient.IsConnected() {
+            c.Logger.Error("Not connected to WhatsApp")
+            return
+        }
+        if c.WAClient.IsLoggedIn() {
+            c.Logger.Info("Already paired")
+            return
+        }
+        linkingCode, err := c.WAClient.PairPhone(args[0], true, whatsmeow.PairClientUnknown, "Firefox (Android)")
+        if err != nil {
+            c.Logger.Errorf("Error pairing phone: %v", err)
+            return
+        }
+        c.Logger.Infof(`Linking code: "%s"`, linkingCode)
+    case "logout":
+        err := c.WAClient.Logout()
+        if err != nil {
+            c.Logger.Errorf("Error logging out: %v", err)
+        } else {
+            c.Logger.Infof("Successfully logged out")
+        }
+    case "appstate":
+        if len(args) < 1 {
+            c.Logger.Error("Usage: appstate <types...>")
+            return
+        }
+        names := []appstate.WAPatchName{appstate.WAPatchName(args[0])}
+        if args[0] == "all" {
+            names = []appstate.WAPatchName{
+                appstate.WAPatchRegular,
+                appstate.WAPatchRegularHigh,
+                appstate.WAPatchRegularLow,
+                appstate.WAPatchCriticalUnblockLow,
+                appstate.WAPatchCriticalBlock,
+            }
+        }
+        resync := len(args) > 1 && args[1] == "resync"
+        for _, name := range names {
+            err := c.WAClient.FetchAppState(name, resync, false)
+            if err != nil {
+                c.Logger.Errorf("Failed to sync app state: %v", err)
+            }
+        }
+    // Add other command cases here
+    default:
+        c.Logger.Warnf("Unknown command: %s", cmd)
+    }
+}
