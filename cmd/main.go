@@ -15,6 +15,7 @@ import (
 )
 
 func main() {
+    // Parse command-line flags into the Config struct
     var config whatsapp.Config
     parser := flags.NewParser(&config, flags.Default)
     _, err := parser.Parse()
@@ -22,12 +23,14 @@ func main() {
         os.Exit(1)
     }
 
+    // Initialize the WhatsApp client
     client, err := whatsapp.NewClient(&config)
     if err != nil {
         fmt.Printf("Failed to initialize WhatsApp client: %v\n", err)
         os.Exit(1)
     }
 
+    // Connect the client
     err = client.Connect()
     if err != nil {
         fmt.Printf("Failed to connect to WhatsApp: %v\n", err)
@@ -39,6 +42,7 @@ func main() {
         go server.StartServer(client)
     }
 
+    // Handle OS signals for graceful shutdown
     c := make(chan os.Signal, 1)
     signal.Notify(c, os.Interrupt, syscall.SIGTERM)
     go func() {
@@ -51,7 +55,7 @@ func main() {
         os.Exit(0)
     }()
 
-    // Handle command-line arguments for immediate commands
+    // Check for immediate commands provided as command-line arguments
     args := os.Args[1:]
     if len(args) > 0 {
         cmd := strings.ToLower(args[0])
@@ -70,11 +74,13 @@ func main() {
                 }
             }()
         }
-        handlers.HandleCommand(client, cmd, args[1:])
+        client.HandleCommand(cmd, args[1:])
         if cmd != "pair-phone" {
+            // Exit after handling the immediate command
             return
         }
     } else {
+        // Wait until the client is connected and logged in
         go func() {
             for {
                 if client.WAClient.IsConnected() {
@@ -90,6 +96,7 @@ func main() {
         }()
     }
 
+    // Read commands from stdin for interactive mode
     input := make(chan string)
     go func() {
         defer close(input)
@@ -102,10 +109,11 @@ func main() {
         }
     }()
 
+    // Process commands from stdin
     for {
         select {
-        case cmd := <-input:
-            if len(cmd) == 0 {
+        case cmd, ok := <-input:
+            if !ok || len(cmd) == 0 {
                 client.Logger.Infof("Stdin closed, exiting")
                 client.Disconnect()
                 return
@@ -113,7 +121,7 @@ func main() {
             args := strings.Fields(cmd)
             cmdName := strings.ToLower(args[0])
             args = args[1:]
-            go handlers.HandleCommand(client, cmdName, args)
+            go client.HandleCommand(cmdName, args)
         }
     }
 }
