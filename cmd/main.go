@@ -1,16 +1,18 @@
 package main
 
 import (
+    "bufio"
+    "fmt"
     "os"
     "os/signal"
-    "syscall"
-    "wahelper/whatsapp"
-    "wahelper/server"
-    "wahelper/handlers"
-    "github.com/jessevdk/go-flags"
-    "bufio"
     "strings"
-    "fmt"
+    "syscall"
+    "time"
+    "wahelper/handlers"
+    "wahelper/server"
+    "wahelper/whatsapp"
+
+    "github.com/jessevdk/go-flags"
 )
 
 func main() {
@@ -33,18 +35,61 @@ func main() {
         os.Exit(1)
     }
 
-    srv := server.NewServer(client)
-    srv.Start()
+    // Start the server if mode is "both" or "send"
+    if config.Mode == "both" || config.Mode == "send" {
+        go server.StartServer(client)
+    }
 
     c := make(chan os.Signal, 1)
     signal.Notify(c, os.Interrupt, syscall.SIGTERM)
     go func() {
         <-c
         client.Logger.Info("Shutting down...")
-        srv.Stop()
+        if config.Mode == "both" || config.Mode == "send" {
+            server.StopServer()
+        }
         client.Disconnect()
         os.Exit(0)
     }()
+
+    // Handle command-line arguments for immediate commands
+    args := os.Args[1:]
+    if len(args) > 0 {
+        cmd := strings.ToLower(args[0])
+        if cmd != "pair-phone" {
+            go func() {
+                for {
+                    if client.WAClient.IsConnected() {
+                        break
+                    }
+                    time.Sleep(1 * time.Second)
+                }
+                time.Sleep(2 * time.Second)
+                if !client.WAClient.IsLoggedIn() {
+                    fmt.Fprintln(os.Stderr, "If not paired, try running:\n\n./wahelper pair-phone <number>\n\n<number> is \"Country Code\" + \"Phone Number\"\n(e.g., if Country Code = 91, then use 919876543210)")
+                    os.Exit(1)
+                }
+            }()
+        }
+        handlers.HandleCommand(client, cmd, args[1:])
+        if cmd != "pair-phone" {
+            return
+        }
+    } else {
+        go func() {
+            for {
+                if client.WAClient.IsConnected() {
+                    break
+                }
+                time.Sleep(1 * time.Second)
+            }
+            time.Sleep(2 * time.Second)
+            if !client.WAClient.IsLoggedIn() {
+                fmt.Fprintln(os.Stderr, "If not paired, try running:\n\n./wahelper pair-phone <number>\n\n<number> is \"Country Code\" + \"Phone Number\"\n(e.g., if Country Code = 91, then use 919876543210)")
+                os.Exit(1)
+            }
+        }()
+    }
 
     input := make(chan string)
     go func() {
@@ -57,6 +102,7 @@ func main() {
             }
         }
     }()
+
     for {
         select {
         case cmd := <-input:
@@ -68,7 +114,7 @@ func main() {
             args := strings.Fields(cmd)
             cmdName := strings.ToLower(args[0])
             args = args[1:]
-            go client.HandleCommand(cmdName, args)
+            go handlers.HandleCommand(client, cmdName, args)
         }
     }
 }
