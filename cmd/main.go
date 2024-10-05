@@ -30,6 +30,13 @@ func main() {
     }
     logger := log.New(os.Stdout, "", log.LstdFlags)
 
+    waClient, err := whatsapp.NewClient(*dbDialect, *dbAddress, logLevel, *requestFullSync, logger)
+    if err != nil {
+        logger.Fatalf("Failed to initialize WhatsApp client: %v", err)
+    }
+
+    waClient.SetEventHandler(handlers.HandleEvent)
+
     args := flag.Args()
     if len(args) > 0 {
         cmd := args[0]
