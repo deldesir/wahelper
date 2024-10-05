@@ -1,312 +1,317 @@
 package whatsapp
 
 import (
-    "bytes"
-    "context"
-    "crypto/sha256"
-    "encoding/json"
-    "fmt"
-    "image"
-    "image/jpeg"
-    _ "image/png"
-    "io"
-    "io/ioutil"
-    "net"
-    "net/http"
-    "os"
-    "os/exec"
-    "path/filepath"
-    "strings"
-    "sync"
-    "sync/atomic"
-    "time"
+	"bytes"
+	"context"
+	"crypto/sha256"
+	"encoding/json"
+	"fmt"
+	"image"
+	"image/jpeg"
+	_ "image/png"
+	"io"
+	"io/ioutil"
+	"net"
+	"net/http"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"time"
 
-    "github.com/jessevdk/go-flags"
-    "github.com/mattn/go-sqlite3"
-    "github.com/otiai10/opengraph/v2"
-    "github.com/sirupsen/logrus"
-    "github.com/zRedShift/mimemagic"
-    "go.mau.fi/util/random"
-    "go.mau.fi/whatsmeow"
-    "go.mau.fi/whatsmeow/appstate"
-    waBinary "go.mau.fi/whatsmeow/binary"
+	"github.com/jessevdk/go-flags"
+	"github.com/mattn/go-sqlite3"
+	"github.com/otiai10/opengraph/v2"
+	"github.com/sirupsen/logrus"
+	"github.com/zRedShift/mimemagic"
+	"go.mau.fi/util/random"
+	"go.mau.fi/whatsmeow"
+	"go.mau.fi/whatsmeow/appstate"
+	waBinary "go.mau.fi/whatsmeow/binary"
     waCommon "go.mau.fi/whatsmeow/proto/waCommon"
-    waCompanionReg "go.mau.fi/whatsmeow/proto/waCompanionReg"
+	waCompanionReg "go.mau.fi/whatsmeow/proto/waCompanionReg"
     waE2E "go.mau.fi/whatsmeow/proto/waE2E"
-    "go.mau.fi/whatsmeow/store"
-    "go.mau.fi/whatsmeow/store/sqlstore"
-    "go.mau.fi/whatsmeow/types"
-    "go.mau.fi/whatsmeow/types/events"
-    waLog "go.mau.fi/whatsmeow/util/log"
-    "google.golang.org/protobuf/proto"
-    "wahelper/utils"
+	"go.mau.fi/whatsmeow/store"
+	"go.mau.fi/whatsmeow/store/sqlstore"
+	"go.mau.fi/whatsmeow/types"
+	"go.mau.fi/whatsmeow/types/events"
+	waLog "go.mau.fi/whatsmeow/util/log"
+	"google.golang.org/protobuf/proto"
+	"wahelper/utils"
 )
 
 type Client struct {
-    WAClient         *whatsmeow.Client
-    Logger           *logrus.Logger
-    Config           *Config
-    IsConnected      bool
-    DeviceID         string
-    DeviceJID        string
-    DefaultJID       string
-    WaitGroup        sync.WaitGroup
-    WaitSync         sync.WaitGroup
-    GroupInfo        GroupInfo
-    UpdatedGroupInfo bool
-    KeepAliveTimeout bool
-    ServerRunning    bool
-    CurrentDir       string
-    FFmpegScriptPath string
-    PairRejectChan   chan bool
+	WAClient         *whatsmeow.Client
+	Logger           *logrus.Logger
+	Config           *Config
+	IsConnected      bool
+	DeviceID         string
+	DeviceJID        string
+	DefaultJID       string
+	WaitGroup        sync.WaitGroup
+	WaitSync         sync.WaitGroup
+	GroupInfo        GroupInfo
+	UpdatedGroupInfo bool
+	KeepAliveTimeout bool
+	HTTPServer       *http.Server
+	ServerRunning    bool
+	CurrentDir       string
+	FFmpegScriptPath string
+	PairRejectChan   chan bool
 }
 
 type Config struct {
-    LogLevel        string `long:"log-level" description:"Logging level" default:"INFO"`
-    DebugLogs       bool   `long:"debug" description:"Enable debug logs?"`
-    DBDialect       string `long:"db-dialect" description:"Database dialect (sqlite3 or postgres)" default:"sqlite3"`
-    DBAddress       string `long:"db-address" description:"Database address" default:"file:wahelper.db?_foreign_keys=on"`
-    RequestFullSync bool   `long:"request-full-sync" description:"Request full (1 year) history sync when logging in?"`
-    HTTPPort        int    `long:"port" description:"HTTP server port" default:"7774"`
-    Mode            string `long:"mode" description:"Select mode: none, both, send" default:"none"`
-    SaveMedia       bool   `long:"save-media" description:"Save Media"`
-    AutoDelete      bool   `long:"auto-delete-media" description:"Delete downloaded media after 30s"`
+	LogLevel        string `long:"log-level" description:"Logging level" default:"INFO"`
+	DebugLogs       bool   `long:"debug" description:"Enable debug logs?"`
+	DBDialect       string `long:"db-dialect" description:"Database dialect (sqlite3 or postgres)" default:"sqlite3"`
+	DBAddress       string `long:"db-address" description:"Database address" default:"file:wahelper.db?_foreign_keys=on"`
+	RequestFullSync bool   `long:"request-full-sync" description:"Request full (1 year) history sync when logging in?"`
+	HTTPPort        int    `long:"port" description:"HTTP server port" default:"7774"`
+	Mode            string `long:"mode" description:"Select mode: none, both, send" default:"none"`
+	SaveMedia       bool   `long:"save-media" description:"Save Media"`
+	AutoDelete      bool   `long:"auto-delete-media" description:"Delete downloaded media after 30s"`
 }
 
 type Group struct {
-    JID  string `json:"JID"`
-    Name string `json:"Name"`
+	JID  string `json:"JID"`
+	Name string `json:"Name"`
 }
 
 type GroupInfo struct {
-    Groups []Group `json:"groups"`
+	Groups []Group `json:"groups"`
 }
 
 func NewClient(config *Config) (*Client, error) {
-    waBinary.IndentXML = true
-    if config.DebugLogs {
-        config.LogLevel = "DEBUG"
-    }
+	waBinary.IndentXML = true
+	if config.DebugLogs {
+		config.LogLevel = "DEBUG"
+	}
 
-    if config.RequestFullSync {
-        store.DeviceProps.RequireFullSync = proto.Bool(true)
-        store.DeviceProps.HistorySyncConfig = &waCompanionReg.DeviceProps_HistorySyncConfig{
-            FullSyncDaysLimit:   proto.Uint32(3650),
-            FullSyncSizeMbLimit: proto.Uint32(102400),
-            StorageQuotaMb:      proto.Uint32(102400),
-        }
-    }
+	if config.RequestFullSync {
+		store.DeviceProps.RequireFullSync = proto.Bool(true)
+		store.DeviceProps.HistorySyncConfig = &waCompanionReg.DeviceProps_HistorySyncConfig{
+			FullSyncDaysLimit:   proto.Uint32(3650),
+			FullSyncSizeMbLimit: proto.Uint32(102400),
+			StorageQuotaMb:      proto.Uint32(102400),
+		}
+	}
 
-    log := waLog.Stdout("Main", config.LogLevel, true)
-    dbLog := waLog.Stdout("Database", config.LogLevel, true)
-    storeContainer, err := sqlstore.New(config.DBDialect, config.DBAddress, dbLog)
-    if err != nil {
-        log.Errorf("Failed to connect to database: %v", err)
-        return nil, err
-    }
+	log := logrus.New()
+	log.Level = logrus.InfoLevel
+	if config.DebugLogs {
+		log.Level = logrus.DebugLevel
+	}
+	dbLog := waLog.Stdout("Database", config.LogLevel, true)
+	storeContainer, err := sqlstore.New(config.DBDialect, config.DBAddress, dbLog)
+	if err != nil {
+		log.Errorf("Failed to connect to database: %v", err)
+		return nil, err
+	}
 
-    device, err := storeContainer.GetFirstDevice()
-    if err != nil {
-        log.Errorf("Failed to get device: %v", err)
-        return nil, err
-    }
+	device, err := storeContainer.GetFirstDevice()
+	if err != nil {
+		log.Errorf("Failed to get device: %v", err)
+		return nil, err
+	}
 
-    waClient := whatsmeow.NewClient(device, waLog.Stdout("Client", config.LogLevel, true))
+	waClient := whatsmeow.NewClient(device, waLog.Stdout("Client", config.LogLevel, true))
 
-    client := &Client{
-        WAClient:       waClient,
-        Logger:         logrus.New(),
-        Config:         config,
-        PairRejectChan: make(chan bool, 1),
-    }
+	client := &Client{
+		WAClient:       waClient,
+		Logger:         log,
+		Config:         config,
+		PairRejectChan: make(chan bool, 1),
+	}
 
-    client.CurrentDir, _ = os.Getwd()
-    os.RemoveAll(filepath.Join(client.CurrentDir, ".tmp"))
-    client.FFmpegScriptPath = filepath.Join(filepath.Dir(client.CurrentDir), "wahelper", "ffmpeg", "ffmpeg")
+	client.CurrentDir, _ = os.Getwd()
+	os.RemoveAll(filepath.Join(client.CurrentDir, ".tmp"))
+	client.FFmpegScriptPath = filepath.Join(filepath.Dir(client.CurrentDir), "wahelper", "ffmpeg", "ffmpeg")
 
-    return client, nil
+	return client, nil
 }
 
 func (c *Client) Connect() error {
-    var isWaitingForPair atomic.Bool
-    c.WAClient.PrePairCallback = func(jid types.JID, platform, businessName string) bool {
-        isWaitingForPair.Store(true)
-        defer isWaitingForPair.Store(false)
-        c.Logger.Infof("Pairing %s (platform: %q, business name: %q). Type 'r' within 3 seconds to reject pair", jid, platform, businessName)
-        select {
-        case reject := <-c.PairRejectChan:
-            if reject {
-                c.Logger.Infof("Rejecting pair")
-                return false
-            }
-        case <-time.After(3 * time.Second):
-        }
-        c.Logger.Infof("Accepting pair")
-        return true
-    }
+	var isWaitingForPair atomic.Bool
+	c.WAClient.PrePairCallback = func(jid types.JID, platform, businessName string) bool {
+		isWaitingForPair.Store(true)
+		defer isWaitingForPair.Store(false)
+		c.Logger.Infof("Pairing %s (platform: %q, business name: %q). Type 'r' within 3 seconds to reject pair", jid, platform, businessName)
+		select {
+		case reject := <-c.PairRejectChan:
+			if reject {
+				c.Logger.Infof("Rejecting pair")
+				return false
+			}
+		case <-time.After(3 * time.Second):
+		}
+		c.Logger.Infof("Accepting pair")
+		return true
+	}
 
-    c.WAClient.AddEventHandler(c.EventHandler)
-    err := c.WAClient.Connect()
-    if err != nil {
-        c.Logger.Errorf("Failed to connect: %v", err)
-        return err
-    }
+	c.WAClient.AddEventHandler(c.EventHandler)
+	err := c.WAClient.Connect()
+	if err != nil {
+		c.Logger.Errorf("Failed to connect: %v", err)
+		return err
+	}
 
-    if c.WAClient.Store.ID != nil {
-        c.DeviceID = c.WAClient.Store.ID.String()
-        c.DeviceJID = c.WAClient.Store.ID.String()
-        c.DefaultJID = c.WAClient.Store.ID.ToNonAD().String()
-    }
+	if c.WAClient.Store.ID != nil {
+		c.DeviceID = c.WAClient.Store.ID.String()
+		c.DeviceJID = c.WAClient.Store.ID.String()
+		c.DefaultJID = c.WAClient.Store.ID.ToNonAD().String()
+	}
 
-    c.IsConnected = true
-    return nil
+	c.IsConnected = true
+	return nil
 }
 
 func (c *Client) Disconnect() {
-    c.WAClient.Disconnect()
-    c.IsConnected = false
+	c.WAClient.Disconnect()
+	c.IsConnected = false
 }
 
 func (c *Client) EventHandler(rawEvt interface{}) {
-    switch evt := rawEvt.(type) {
-    case *events.AppStateSyncComplete:
-        if len(c.WAClient.Store.PushName) > 0 && evt.Name == appstate.WAPatchCriticalBlock {
-            err := c.WAClient.SendPresence(types.PresenceAvailable)
-            if err != nil {
-                c.Logger.Warnf("Failed to send available presence: %v", err)
-            } else {
-                c.Logger.Infof("Marked self as available")
-                c.IsConnected = true
+	switch evt := rawEvt.(type) {
+	case *events.AppStateSyncComplete:
+		if len(c.WAClient.Store.PushName) > 0 && evt.Name == appstate.WAPatchCriticalBlock {
+			err := c.WAClient.SendPresence(types.PresenceAvailable)
+			if err != nil {
+				c.Logger.Warnf("Failed to send available presence: %v", err)
+			} else {
+				c.Logger.Infof("Marked self as available")
+				c.IsConnected = true
 
-                if c.Config.Mode == "both" {
-                    c.UpdatedGroupInfo = false
-                    groups, err := c.WAClient.GetJoinedGroups()
-                    if err == nil {
-                        c.GroupInfo.Groups = []Group{}
-                        for _, group := range groups {
-                            c.GroupInfo.Groups = append(c.GroupInfo.Groups, Group{
-                                JID:  group.JID.String(),
-                                Name: group.Name,
-                            })
-                        }
-                    }
-                    c.UpdatedGroupInfo = true
-                    c.Logger.Infof("Receive/Send Mode Enabled")
-                    c.Logger.Infof("Will Now Receive/Send Messages In Tasker")
-                } else if c.Config.Mode == "send" {
-                    c.Logger.Infof("Send Mode Enabled")
-                    c.Logger.Infof("Can Now Send Messages From Tasker")
-                }
-            }
-        }
-    case *events.Connected, *events.PushNameSetting:
-        if len(c.WAClient.Store.PushName) == 0 {
-            return
-        }
-        err := c.WAClient.SendPresence(types.PresenceAvailable)
-        if err != nil {
-            c.Logger.Warnf("Failed to send available presence: %v", err)
-        } else {
-            c.Logger.Infof("Marked self as available")
-            c.IsConnected = true
+				if c.Config.Mode == "both" {
+					c.UpdatedGroupInfo = false
+					groups, err := c.WAClient.GetJoinedGroups()
+					if err == nil {
+						c.GroupInfo.Groups = []Group{}
+						for _, group := range groups {
+							c.GroupInfo.Groups = append(c.GroupInfo.Groups, Group{
+								JID:  group.JID.String(),
+								Name: group.Name,
+							})
+						}
+					}
+					c.UpdatedGroupInfo = true
+					c.Logger.Infof("Receive/Send Mode Enabled")
+					c.Logger.Infof("Will Now Receive/Send Messages In Tasker")
+				} else if c.Config.Mode == "send" {
+					c.Logger.Infof("Send Mode Enabled")
+					c.Logger.Infof("Can Now Send Messages From Tasker")
+				}
+			}
+		}
+	case *events.Connected, *events.PushNameSetting:
+		if len(c.WAClient.Store.PushName) == 0 {
+			return
+		}
+		err := c.WAClient.SendPresence(types.PresenceAvailable)
+		if err != nil {
+			c.Logger.Warnf("Failed to send available presence: %v", err)
+		} else {
+			c.Logger.Infof("Marked self as available")
+			c.IsConnected = true
 
-            if c.Config.Mode == "both" {
-                c.UpdatedGroupInfo = false
-                groups, err := c.WAClient.GetJoinedGroups()
-                if err == nil {
-                    c.GroupInfo.Groups = []Group{}
-                    for _, group := range groups {
-                        c.GroupInfo.Groups = append(c.GroupInfo.Groups, Group{
-                            JID:  group.JID.String(),
-                            Name: group.Name,
-                        })
-                    }
-                }
-                c.UpdatedGroupInfo = true
-                c.Logger.Infof("Receive/Send Mode Enabled")
-                c.Logger.Infof("Will Now Receive/Send Messages In Tasker")
-            } else if c.Config.Mode == "send" {
-                c.Logger.Infof("Send Mode Enabled")
-                c.Logger.Infof("Can Now Send Messages From Tasker")
-            }
-        }
-    case *events.StreamReplaced:
-        c.Logger.Infof("Stream replaced, exiting")
-        os.Exit(0)
-    case *events.Message:
-        metaParts := []string{
-            fmt.Sprintf("pushname: %s", evt.Info.PushName),
-            fmt.Sprintf("timestamp: %s", evt.Info.Timestamp),
-        }
-        if evt.Info.Type != "" {
-            metaParts = append(metaParts, fmt.Sprintf("type: %s", evt.Info.Type))
-        }
-        c.Logger.Infof("Received message %s from %s (%s): %+v", evt.Info.ID, evt.Info.SourceString(), strings.Join(metaParts, ", "), evt.Message)
+			if c.Config.Mode == "both" {
+				c.UpdatedGroupInfo = false
+				groups, err := c.WAClient.GetJoinedGroups()
+				if err == nil {
+					c.GroupInfo.Groups = []Group{}
+					for _, group := range groups {
+						c.GroupInfo.Groups = append(c.GroupInfo.Groups, Group{
+							JID:  group.JID.String(),
+							Name: group.Name,
+						})
+					}
+				}
+				c.UpdatedGroupInfo = true
+				c.Logger.Infof("Receive/Send Mode Enabled")
+				c.Logger.Infof("Will Now Receive/Send Messages In Tasker")
+			} else if c.Config.Mode == "send" {
+				c.Logger.Infof("Send Mode Enabled")
+				c.Logger.Infof("Can Now Send Messages From Tasker")
+			}
+		}
+	case *events.StreamReplaced:
+		c.Logger.Infof("Stream replaced, exiting")
+		os.Exit(0)
+	case *events.Message:
+		metaParts := []string{
+			fmt.Sprintf("pushname: %s", evt.Info.PushName),
+			fmt.Sprintf("timestamp: %s", evt.Info.Timestamp),
+		}
+		if evt.Info.Type != "" {
+			metaParts = append(metaParts, fmt.Sprintf("type: %s", evt.Info.Type))
+		}
+		c.Logger.Infof("Received message %s from %s (%s): %+v", evt.Info.ID, evt.Info.SourceString(), strings.Join(metaParts, ", "), evt.Message)
 
-        if c.Config.Mode == "both" {
-            if c.IsConnected {
-                c.WaitGroup.Add(1)
-            }
-            go c.ParseReceivedMessage(evt, &c.WaitGroup)
-        }
-    case *events.Receipt:
-        if evt.Type == types.ReceiptTypeRead || evt.Type == types.ReceiptTypeReadSelf {
-            c.Logger.Infof("%v was read by %s at %s", evt.MessageIDs, evt.SourceString(), evt.Timestamp)
-        } else if evt.Type == types.ReceiptTypeDelivered {
-            c.Logger.Infof("%s was delivered to %s at %s", evt.MessageIDs[0], evt.SourceString(), evt.Timestamp)
-        }
-    case *events.Presence:
-        if evt.Unavailable {
-            if evt.LastSeen.IsZero() {
-                c.Logger.Infof("%s is now offline", evt.From)
-            } else {
-                c.Logger.Infof("%s is now offline (last seen: %s)", evt.From, evt.LastSeen)
-            }
-        } else {
-            c.Logger.Infof("%s is now online", evt.From)
-        }
-    case *events.OfflineSyncCompleted:
-        go func() {
-            c.WaitSync.Wait()
-            c.Logger.Infof("Offline Sync Completed")
-            c.WaitSync = sync.WaitGroup{}
-        }()
-    case *events.Disconnected:
-        c.IsConnected = false
-        c.WaitGroup = sync.WaitGroup{}
-        c.Logger.Infof("Bad network, waiting for reconnection")
-        err := c.Connect()
-        if err != nil {
-            c.Logger.Errorf("Failed to connect: %v", err)
-        }
-    case *events.AppState:
-        c.Logger.Debugf("App state event: %+v / %+v", evt.Index, evt.SyncActionValue)
-    case *events.KeepAliveTimeout:
-        c.Logger.Debugf("Keepalive timeout event: %+v", evt)
-        c.IsConnected = false
-        c.WaitGroup = sync.WaitGroup{}
-        if !c.KeepAliveTimeout {
-            c.KeepAliveTimeout = true
-            for {
-                c.Disconnect()
-                err := c.Connect()
-                if err == nil {
-                    break
-                }
-                c.Logger.Errorf("Failed to connect after keepalive timeout: %v", err)
-                time.Sleep(2 * time.Second)
-            }
-            c.KeepAliveTimeout = false
-        }
-    case *events.KeepAliveRestored:
-        c.Logger.Debugf("Keepalive restored")
-    case *events.Blocklist:
-        c.Logger.Infof("Blocklist event: %+v", evt)
-    }
+		if c.Config.Mode == "both" {
+			if c.IsConnected {
+				c.WaitGroup.Add(1)
+			}
+			go c.ParseReceivedMessage(evt, &c.WaitGroup)
+		}
+	case *events.Receipt:
+		if evt.Type == types.ReceiptTypeRead || evt.Type == types.ReceiptTypeReadSelf {
+			c.Logger.Infof("%v was read by %s at %s", evt.MessageIDs, evt.SourceString(), evt.Timestamp)
+		} else if evt.Type == types.ReceiptTypeDelivered {
+			c.Logger.Infof("%s was delivered to %s at %s", evt.MessageIDs[0], evt.SourceString(), evt.Timestamp)
+		}
+	case *events.Presence:
+		if evt.Unavailable {
+			if evt.LastSeen.IsZero() {
+				c.Logger.Infof("%s is now offline", evt.From)
+			} else {
+				c.Logger.Infof("%s is now offline (last seen: %s)", evt.From, evt.LastSeen)
+			}
+		} else {
+			c.Logger.Infof("%s is now online", evt.From)
+		}
+	case *events.OfflineSyncCompleted:
+		go func() {
+			c.WaitSync.Wait()
+			c.Logger.Infof("Offline Sync Completed")
+			c.WaitSync = sync.WaitGroup{}
+		}()
+	case *events.Disconnected:
+		c.IsConnected = false
+		c.WaitGroup = sync.WaitGroup{}
+		c.Logger.Infof("Bad network, waiting for reconnection")
+		err := c.Connect()
+		if err != nil {
+			c.Logger.Errorf("Failed to connect: %v", err)
+		}
+	case *events.AppState:
+		c.Logger.Debugf("App state event: %+v / %+v", evt.Index, evt.SyncActionValue)
+	case *events.KeepAliveTimeout:
+		c.Logger.Debugf("Keepalive timeout event: %+v", evt)
+		c.IsConnected = false
+		c.WaitGroup = sync.WaitGroup{}
+		if !c.KeepAliveTimeout {
+			c.KeepAliveTimeout = true
+			for {
+				c.Disconnect()
+				err := c.Connect()
+				if err == nil {
+					break
+				}
+				c.Logger.Errorf("Failed to connect after keepalive timeout: %v", err)
+				time.Sleep(2 * time.Second)
+			}
+			c.KeepAliveTimeout = false
+		}
+	case *events.KeepAliveRestored:
+		c.Logger.Debugf("Keepalive restored")
+	case *events.Blocklist:
+		c.Logger.Infof("Blocklist event: %+v", evt)
+	}
 }
 
 func (c *Client) ParseReceivedMessage(evt *events.Message, wg *sync.WaitGroup) {
-    defer wg.Done()
+	defer wg.Done()
 
     // Wait until group info is updated
     for !c.UpdatedGroupInfo {
@@ -553,68 +558,198 @@ func (c *Client) SendMessage(recipientJID string, message string) error {
 }
 
 func (c *Client) HandleCommand(cmd string, args []string) {
-    switch cmd {
-    case "send":
-        if len(args) < 2 {
-            c.Logger.Error("Usage: send <jid> <message>")
-            return
-        }
-        recipientJID := args[0]
-        message := strings.Join(args[1:], " ")
-        err := c.SendMessage(recipientJID, message)
-        if err != nil {
-            c.Logger.Errorf("Failed to send message: %v", err)
-        }
-    case "pair-phone":
-        if len(args) < 1 {
-            c.Logger.Error("Usage: pair-phone <number>")
-            return
-        }
-        if !c.WAClient.IsConnected() {
-            c.Logger.Error("Not connected to WhatsApp")
-            return
-        }
-        if c.WAClient.IsLoggedIn() {
-            c.Logger.Info("Already paired")
-            return
-        }
-        linkingCode, err := c.WAClient.PairPhone(args[0], true, whatsmeow.PairClientUnknown, "Firefox (Android)")
-        if err != nil {
-            c.Logger.Errorf("Error pairing phone: %v", err)
-            return
-        }
-        c.Logger.Infof(`Linking code: "%s"`, linkingCode)
-    case "logout":
-        err := c.WAClient.Logout()
-        if err != nil {
-            c.Logger.Errorf("Error logging out: %v", err)
-        } else {
-            c.Logger.Infof("Successfully logged out")
-        }
-    case "appstate":
-        if len(args) < 1 {
-            c.Logger.Error("Usage: appstate <types...>")
-            return
-        }
-        names := []appstate.WAPatchName{appstate.WAPatchName(args[0])}
-        if args[0] == "all" {
-            names = []appstate.WAPatchName{
-                appstate.WAPatchRegular,
-                appstate.WAPatchRegularHigh,
-                appstate.WAPatchRegularLow,
-                appstate.WAPatchCriticalUnblockLow,
-                appstate.WAPatchCriticalBlock,
-            }
-        }
-        resync := len(args) > 1 && args[1] == "resync"
-        for _, name := range names {
-            err := c.WAClient.FetchAppState(name, resync, false)
-            if err != nil {
-                c.Logger.Errorf("Failed to sync app state: %v", err)
-            }
-        }
-    // Add other command cases here
-    default:
-        c.Logger.Warnf("Unknown command: %s", cmd)
-    }
+	switch cmd {
+	case "send":
+		if len(args) < 2 {
+			c.Logger.Error("Usage: send <jid> <message>")
+			return
+		}
+		recipientJID := args[0]
+		message := strings.Join(args[1:], " ")
+		err := c.SendMessage(recipientJID, message)
+		if err != nil {
+			c.Logger.Errorf("Failed to send message: %v", err)
+		}
+	case "pair-phone":
+		if len(args) < 1 {
+			c.Logger.Error("Usage: pair-phone <number>")
+			return
+		}
+		if !c.WAClient.IsConnected() {
+			c.Logger.Error("Not connected to WhatsApp")
+			return
+		}
+		if c.WAClient.IsLoggedIn() {
+			c.Logger.Info("Already paired")
+			return
+		}
+		linkingCode, err := c.WAClient.PairPhone(args[0], true, whatsmeow.PairClientUnknown, "Firefox (Android)")
+		if err != nil {
+			c.Logger.Errorf("Error pairing phone: %v", err)
+			return
+		}
+		c.Logger.Infof(`Linking code: "%s"`, linkingCode)
+	case "logout":
+		err := c.WAClient.Logout()
+		if err != nil {
+			c.Logger.Errorf("Error logging out: %v", err)
+		} else {
+			c.Logger.Infof("Successfully logged out")
+		}
+	case "appstate":
+		if len(args) < 1 {
+			c.Logger.Error("Usage: appstate <types...>")
+			return
+		}
+		names := []appstate.WAPatchName{appstate.WAPatchName(args[0])}
+		if args[0] == "all" {
+			names = []appstate.WAPatchName{
+				appstate.WAPatchRegular,
+				appstate.WAPatchRegularHigh,
+				appstate.WAPatchRegularLow,
+				appstate.WAPatchCriticalUnblockLow,
+				appstate.WAPatchCriticalBlock,
+			}
+		}
+		resync := len(args) > 1 && args[1] == "resync"
+		for _, name := range names {
+			err := c.WAClient.FetchAppState(name, resync, false)
+			if err != nil {
+				c.Logger.Errorf("Failed to sync app state: %v", err)
+			}
+		}
+	// Add other command cases here
+	default:
+		c.Logger.Warnf("Unknown command: %s", cmd)
+	}
+}
+
+func (c *Client) StartServer() {
+	if !c.ServerRunning {
+		mux := http.NewServeMux()
+		mux.HandleFunc("/", c.HandleHTTPRequest)
+		c.HTTPServer = &http.Server{
+			Addr:    "localhost:" + fmt.Sprintf("%d", c.Config.HTTPPort),
+			Handler: mux,
+		}
+		c.ServerRunning = true
+		c.Logger.Infof("HTTP server started on port %d", c.Config.HTTPPort)
+		go func() {
+			err := c.HTTPServer.ListenAndServe()
+			if err != nil && err != http.ErrServerClosed {
+				c.Logger.Errorf("HTTP server error: %v", err)
+			}
+			c.ServerRunning = false
+		}()
+	}
+}
+
+func (c *Client) StopServer() {
+	if c.ServerRunning {
+		c.HTTPServer.Close()
+		c.ServerRunning = false
+		c.Logger.Infof("HTTP server stopped")
+	}
+}
+
+func (c *Client) HandleHTTPRequest(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path != "/" {
+		http.Error(w, "404 not found.", http.StatusNotFound)
+		c.Logger.Errorf("Invalid request path, 404 not found.")
+		return
+	}
+
+	switch r.Method {
+	case "GET":
+		if c.IsConnected {
+			if c.Config.Mode == "both" {
+				c.Logger.Infof("GET request received, server is running in both mode")
+				fmt.Fprintf(w, "Server is running in both mode")
+			} else if c.Config.Mode == "send" {
+				c.Logger.Infof("GET request received, server is running in send mode")
+				fmt.Fprintf(w, "Server is running in send mode")
+			}
+		} else {
+			c.Logger.Infof("GET request received, server is waiting for reconnection")
+			fmt.Fprintf(w, "Bad network, server is waiting for reconnection")
+		}
+		return
+	case "POST":
+		dec := json.NewDecoder(r.Body)
+		for {
+			argsData := struct {
+				Args []string `json:"args"`
+			}{}
+
+			if err := dec.Decode(&argsData); err == io.EOF {
+				break
+			} else if err != nil {
+				c.Logger.Errorf("Error decoding JSON: %v", err)
+				return
+			}
+
+			args := argsData.Args
+
+			if len(args) < 1 {
+				fmt.Fprintf(w, "command received")
+				return
+			}
+
+			cmd := strings.ToLower(args[0])
+
+			if cmd == "stop" {
+				fmt.Fprintf(w, "exiting")
+				go func() {
+					time.Sleep(1 * time.Second)
+					c.StopServer()
+					c.Logger.Infof("Exit command received, exiting...")
+					c.Disconnect()
+					os.Exit(0)
+				}()
+				return
+			} else if cmd == "restart" {
+				fmt.Fprintf(w, "restarting")
+				go func() {
+					time.Sleep(1 * time.Second)
+					c.StopServer()
+					if c.Config.Mode == "both" {
+						c.Logger.Infof("Receive/Send Mode Enabled")
+						c.Logger.Infof("Will Now Receive/Send Messages")
+						c.StartServer()
+					} else if c.Config.Mode == "send" {
+						c.Logger.Infof("Send Mode Enabled")
+						c.Logger.Infof("Can Now Send Messages")
+						c.StartServer()
+					}
+				}()
+				return
+			}
+
+			fmt.Fprintf(w, "command received")
+			if c.Config.Mode == "both" || c.Config.Mode == "send" {
+				go c.HandleCommand(cmd, args[1:])
+			}
+		}
+		return
+	default:
+		c.Logger.Errorf("%s method not supported, only GET and POST methods are supported.", r.Method)
+		http.Error(w, "Method not supported", http.StatusMethodNotAllowed)
+		return
+	}
+}
+
+func (c *Client) SendMessage(recipientJID string, message string) error {
+	recipient, ok := utils.ParseJID(recipientJID)
+	if !ok {
+		c.Logger.Errorf("Invalid JID: %s", recipientJID)
+		return fmt.Errorf("invalid JID")
+	}
+	msg := &waProto.Message{Conversation: proto.String(message)}
+	resp, err := c.WAClient.SendMessage(context.Background(), recipient, "", msg)
+	if err != nil {
+		c.Logger.Errorf("Error sending message: %v", err)
+		return err
+	}
+	c.Logger.Infof("Message sent to %s (server timestamp: %s)", recipientJID, resp.Timestamp)
+	return nil
 }
