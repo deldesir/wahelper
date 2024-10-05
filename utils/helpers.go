@@ -14,7 +14,11 @@ import (
     "github.com/zRedShift/mimemagic"
 )
 
+// ParseJID parses a string into a types.JID object, handling different input formats.
 func ParseJID(arg string) (types.JID, bool) {
+    if arg == "" {
+        return types.JID{}, false
+    }
     if arg[0] == '+' {
         arg = arg[1:]
     }
@@ -101,7 +105,10 @@ func ResizeImage(img image.Image) image.Image {
 }
 
 func SavePollQuestionAndOptions(messageID string, question string, options []string, baseDir string) error {
-    os.MkdirAll(filepath.Join(baseDir, ".tmp"), os.ModePerm)
+    err := os.MkdirAll(filepath.Join(baseDir, ".tmp"), os.ModePerm)
+    if err != nil {
+        return fmt.Errorf("failed to create directory: %w", err)
+    }
     err := os.WriteFile(filepath.Join(baseDir, ".tmp", "poll_question_"+messageID), []byte(question), 0644)
     if err != nil {
         return fmt.Errorf("failed to save poll question: %w", err)
