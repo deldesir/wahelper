@@ -37,6 +37,11 @@ func main() {
 
     waClient.SetEventHandler(handlers.HandleEvent)
 
+    err = waClient.Connect()
+    if err != nil {
+        logger.Fatalf("Failed to connect to WhatsApp: %v", err)
+    }
+
     args := flag.Args()
     if len(args) > 0 {
         cmd := args[0]
@@ -54,4 +59,21 @@ func main() {
         }
     }
 
+    // Start HTTP server if in "both" or "send" mode
+    if *mode == "both" || *mode == "send" {
+        go func() {
+            err := server.StartServer(*httpPort, handlers.GetHTTPHandler(waClient, *mode, *saveMedia, *autoDelete))
+            if err != nil {
+                logger.Fatalf("Failed to start HTTP server: %v", err)
+            }
+        }()
+        logger.Printf("%s mode enabled", *mode)
+    }
+
+    // Wait for interrupt signal to gracefully shut down
+    c := make(chan os.Signal, 1)
+    signal.Notify(c, os.Interrupt, syscall.SIGTERM)
+    <-c
+    logger.Println("Shutting down...")
+    waClient.Disconnect()
 }
