@@ -8,7 +8,6 @@ import (
     "strings"
     "syscall"
     "time"
-    "wahelper/server"
     "wahelper/whatsapp"
 
     "github.com/jessevdk/go-flags"
@@ -39,7 +38,7 @@ func main() {
 
     // Start the server if mode is "both" or "send"
     if config.Mode == "both" || config.Mode == "send" {
-        go server.StartServer(client)
+        go client.StartServer()
     }
 
     // Handle OS signals for graceful shutdown
@@ -49,7 +48,7 @@ func main() {
         <-c
         client.Logger.Info("Shutting down...")
         if config.Mode == "both" || config.Mode == "send" {
-            server.StopServer()
+            client.StopServer()
         }
         client.Disconnect()
         os.Exit(0)
