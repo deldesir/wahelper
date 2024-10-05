@@ -1,106 +1,10 @@
 package handlers
 
 import (
-    "encoding/json"
-    "fmt"
-    "io"
-    "net/http"
-    "os"
     "strings"
-    "time"
-    "wahelper/whatsapp"
-    "wahelper/server"
     "wahelper/utils"
-    "context"
-    "path/filepath"
-    "go.mau.fi/whatsmeow/appstate"
-    "strconv"
+    "wahelper/whatsapp"
 )
-
-func HandleHTTPRequest(w http.ResponseWriter, r *http.Request, waClient *whatsapp.Client, srv *server.Server) {
-    if r.URL.Path != "/" {
-        http.Error(w, "404 not found.", http.StatusNotFound)
-        waClient.Logger.Errorf("Invalid request path, 404 not found.")
-        return
-    }
-
-    switch r.Method {
-    case "GET":
-        if waClient.IsConnected {
-            if waClient.Config.Mode == "both" {
-                waClient.Logger.Infof("GET request received, server is running in both mode")
-                fmt.Fprintf(w, "Server is running in both mode")
-            } else if waClient.Config.Mode == "send" {
-                waClient.Logger.Infof("GET request received, server is running in send mode")
-                fmt.Fprintf(w, "Server is running in send mode")
-            }
-        } else {
-            waClient.Logger.Infof("GET request received, server is waiting for reconnection")
-            fmt.Fprintf(w, "Bad network, server is waiting for reconnection")
-        }
-        return
-    case "POST":
-        dec := json.NewDecoder(r.Body)
-        for {
-            argsData := struct {
-                Args []string `json:"args"`
-            }{}
-
-            if err := dec.Decode(&argsData); err == io.EOF {
-                break
-            } else if err != nil {
-                waClient.Logger.Errorf("Error: %s", err)
-                return
-            }
-
-            args := argsData.Args
-
-            if len(args) < 1 {
-                fmt.Fprintf(w, "command received")
-                return
-            }
-
-            cmd := strings.ToLower(args[0])
-
-            if cmd == "stop" {
-                fmt.Fprintf(w, "exiting")
-                go func() {
-                    time.Sleep(1 * time.Second)
-                    srv.Stop()
-                    waClient.Logger.Infof("Exit command received, exiting...")
-                    waClient.Disconnect()
-                    os.Exit(0)
-                }()
-                return
-            } else if cmd == "restart" {
-                fmt.Fprintf(w, "restarting")
-                go func() {
-                    time.Sleep(1 * time.Second)
-                    srv.Stop()
-                    if waClient.Config.Mode == "both" {
-                        waClient.Logger.Infof("Receive/Send Mode Enabled")
-                        waClient.Logger.Infof("Will Now Receive/Send Messages")
-                        srv.Start()
-                    } else if waClient.Config.Mode == "send" {
-                        waClient.Logger.Infof("Send Mode Enabled")
-                        waClient.Logger.Infof("Can Now Send Messages")
-                        srv.Start()
-                    }
-                }()
-                return
-            }
-
-            fmt.Fprintf(w, "command received")
-            if waClient.Config.Mode == "both" || waClient.Config.Mode == "send" {
-                go HandleCommand(waClient, cmd, args[1:])
-            }
-        }
-        return
-    default:
-        waClient.Logger.Errorf("%s, only GET and POST methods are supported.", r.Method)
-        return
-    }
-}
 
 func HandleCommand(waClient *whatsapp.Client, cmd string, args []string) {
     switch cmd {
@@ -158,8 +62,7 @@ func HandleCommand(waClient *whatsapp.Client, cmd string, args []string) {
             }
         }
     // TODO: Add other command cases
-    default:
-        waClient.Logger.Warnf("Unknown command: %s", cmd)
-    }
-}
-
+     default:
+         waClient.Logger.Warnf("Unknown command: %s", cmd)
+     }
+ }
