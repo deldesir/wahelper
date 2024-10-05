@@ -66,9 +66,9 @@ func main() {
                 return
             }
             args := strings.Fields(cmd)
-            cmdName := args[0]
+            cmdName := strings.ToLower(args[0])
             args = args[1:]
-            go handlers.HandleCommand(client, cmdName, args)
+            go client.HandleCommand(cmdName, args)
         }
     }
 }
