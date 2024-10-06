@@ -60,6 +60,8 @@ type Client struct {
 	CurrentDir       string
 	FFmpegScriptPath string
 	PairRejectChan   chan bool
+
+	commandHandlers map[string]func(args []string) error
 }
 
 type Config struct {
