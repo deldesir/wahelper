@@ -21,18 +21,20 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/jessevdk/go-flags"
-	"github.com/mattn/go-sqlite3"
-	"github.com/otiai10/opengraph/v2"
+	// "github.com/jessevdk/go-flags"
+	// "github.com/mattn/go-sqlite3"
+	// "github.com/otiai10/opengraph/v2"
 	"github.com/sirupsen/logrus"
 	"github.com/zRedShift/mimemagic"
 	"go.mau.fi/util/random"
 	"go.mau.fi/whatsmeow"
 	"go.mau.fi/whatsmeow/appstate"
 	waBinary "go.mau.fi/whatsmeow/binary"
-    waCommon "go.mau.fi/whatsmeow/proto/waCommon"
+    // waCommon "go.mau.fi/whatsmeow/proto/waCommon"
 	waCompanionReg "go.mau.fi/whatsmeow/proto/waCompanionReg"
-    waE2E "go.mau.fi/whatsmeow/proto/waE2E"
+	waE2E "go.mau.fi/whatsmeow/proto/waE2E"
+	waProto "go.mau.fi/whatsmeow/proto/waProto"
+	waCommon "go.mau.fi/whatsmeow/proto/waCommon"
 	"go.mau.fi/whatsmeow/store"
 	"go.mau.fi/whatsmeow/store/sqlstore"
 	"go.mau.fi/whatsmeow/types"
@@ -121,17 +123,93 @@ func NewClient(config *Config) (*Client, error) {
 	waClient := whatsmeow.NewClient(device, waLog.Stdout("Client", config.LogLevel, true))
 
 	client := &Client{
-		WAClient:       waClient,
-		Logger:         log,
-		Config:         config,
-		PairRejectChan: make(chan bool, 1),
+		WAClient:        waClient,
+		Logger:          log,
+		Config:          config,
+		PairRejectChan:  make(chan bool, 1),
+		commandHandlers: make(map[string]func(args []string) error),
 	}
 
+	client.registerCommands()
+
 	client.CurrentDir, _ = os.Getwd()
-	os.RemoveAll(filepath.Join(client.CurrentDir, ".tmp"))
+	// os.RemoveAll(filepath.Join(client.CurrentDir, ".tmp"))
 	client.FFmpegScriptPath = filepath.Join(filepath.Dir(client.CurrentDir), "wahelper", "ffmpeg", "ffmpeg")
 
 	return client, nil
+}
+
+func (c *Client) registerCommands() {
+	// Send-related commands
+	c.commandHandlers["send"] = c.handleSendCommand
+	c.commandHandlers["sendlist"] = c.handleSendListCommand
+	c.commandHandlers["sendpoll"] = c.handleSendPollCommand
+	c.commandHandlers["sendlink"] = c.handleSendLinkCommand
+	c.commandHandlers["senddoc"] = c.handleSendDocumentCommand
+	c.commandHandlers["sendvid"] = c.handleSendVideoCommand
+	c.commandHandlers["sendaudio"] = c.handleSendAudioCommand
+	c.commandHandlers["sendimg"] = c.handleSendImageCommand
+	c.commandHandlers["react"] = c.handleReactCommand
+	c.commandHandlers["revoke"] = c.handleRevokeCommand
+	c.commandHandlers["markread"] = c.handleMarkReadCommand
+	c.commandHandlers["batchmessagegroupmembers"] = c.handleBatchMessageGroupMembersCommand
+
+	// Group management commands
+	c.commandHandlers["getgroup"] = c.handleGetGroupCommand
+	c.commandHandlers["subgroups"] = c.handleSubGroupsCommand
+	c.commandHandlers["communityparticipants"] = c.handleCommunityParticipantsCommand
+	c.commandHandlers["getinvitelink"] = c.handleGetInviteLinkCommand
+	c.commandHandlers["queryinvitelink"] = c.handleQueryInviteLinkCommand
+	c.commandHandlers["joininvitelink"] = c.handleJoinInviteLinkCommand
+	c.commandHandlers["updateparticipant"] = c.handleUpdateParticipantCommand
+	c.commandHandlers["getrequestparticipant"] = c.handleGetRequestParticipantCommand
+
+	// Media-related commands
+	c.commandHandlers["mediaconn"] = c.handleMediaConnCommand
+	c.commandHandlers["getavatar"] = c.handleGetAvatarCommand
+
+	// Account and privacy commands
+	c.commandHandlers["pair-phone"] = c.handlePairPhoneCommand
+	c.commandHandlers["logout"] = c.handleLogoutCommand
+	c.commandHandlers["setpushname"] = c.handleSetPushNameCommand
+	c.commandHandlers["setstatus"] = c.handleSetStatusCommand
+	c.commandHandlers["privacysettings"] = c.handlePrivacySettingsCommand
+	c.commandHandlers["setprivacysetting"] = c.handleSetPrivacySettingCommand
+	c.commandHandlers["getstatusprivacy"] = c.handleGetStatusPrivacyCommand
+	c.commandHandlers["setdisappeartimer"] = c.handleSetDisappearTimerCommand
+	c.commandHandlers["setdefaultdisappeartimer"] = c.handleSetDefaultDisappearTimerCommand
+	c.commandHandlers["getblocklist"] = c.handleGetBlockListCommand
+	c.commandHandlers["block"] = c.handleBlockCommand
+	c.commandHandlers["unblock"] = c.handleUnblockCommand
+
+	// Newsletter-related commands
+	c.commandHandlers["listnewsletters"] = c.handleListNewslettersCommand
+	c.commandHandlers["getnewsletter"] = c.handleGetNewsletterCommand
+	c.commandHandlers["getnewsletterinvite"] = c.handleGetNewsletterInviteCommand
+	c.commandHandlers["livesubscribenewsletter"] = c.handleLiveSubscribeNewsletterCommand
+	c.commandHandlers["getnewslettermessages"] = c.handleGetNewsletterMessagesCommand
+	c.commandHandlers["createnewsletter"] = c.handleCreateNewsletterCommand
+
+	// Miscellaneous commands
+	c.commandHandlers["reconnect"] = c.handleReconnectCommand
+	c.commandHandlers["appstate"] = c.handleAppStateCommand
+	c.commandHandlers["request-appstate-key"] = c.handleRequestAppStateKeyCommand
+	c.commandHandlers["unavailable-request"] = c.handleUnavailableRequestCommand
+	c.commandHandlers["checkuser"] = c.handleCheckUserCommand
+	c.commandHandlers["subscribepresence"] = c.handleSubscribePresenceCommand
+	c.commandHandlers["presence"] = c.handlePresenceCommand
+	c.commandHandlers["chatpresence"] = c.handleChatPresenceCommand
+	c.commandHandlers["getuser"] = c.handleGetUserCommand
+	c.commandHandlers["raw"] = c.handleRawCommand
+	c.commandHandlers["querybusinesslink"] = c.handleQueryBusinessLinkCommand
+	c.commandHandlers["listusers"] = c.handleListUsersCommand
+	c.commandHandlers["listgroups"] = c.handleListGroupsCommand
+	c.commandHandlers["archive"] = c.handleArchiveCommand
+	c.commandHandlers["mute"] = c.handleMuteCommand
+	c.commandHandlers["pin"] = c.handlePinCommand
+	c.commandHandlers["labelchat"] = c.handleLabelChatCommand
+	c.commandHandlers["labelmessage"] = c.handleLabelMessageCommand
+	c.commandHandlers["editlabel"] = c.handleEditLabelCommand
 }
 
 func (c *Client) Connect() error {
@@ -200,9 +278,11 @@ func (c *Client) EventHandler(rawEvt interface{}) {
 					c.UpdatedGroupInfo = true
 					c.Logger.Infof("Receive/Send Mode Enabled")
 					c.Logger.Infof("Will Now Receive/Send Messages In Tasker")
+					// Start any necessary processes here
 				} else if c.Config.Mode == "send" {
 					c.Logger.Infof("Send Mode Enabled")
 					c.Logger.Infof("Can Now Send Messages From Tasker")
+					// Start any necessary processes here
 				}
 			}
 		}
@@ -232,9 +312,11 @@ func (c *Client) EventHandler(rawEvt interface{}) {
 				c.UpdatedGroupInfo = true
 				c.Logger.Infof("Receive/Send Mode Enabled")
 				c.Logger.Infof("Will Now Receive/Send Messages In Tasker")
+				// Start any necessary processes here
 			} else if c.Config.Mode == "send" {
 				c.Logger.Infof("Send Mode Enabled")
 				c.Logger.Infof("Can Now Send Messages From Tasker")
+				// Start any necessary processes here
 			}
 		}
 	case *events.StreamReplaced:
@@ -313,6 +395,7 @@ func (c *Client) EventHandler(rawEvt interface{}) {
 }
 
 func (c *Client) ParseReceivedMessage(evt *events.Message, wg *sync.WaitGroup) {
+	// Implement your message parsing logic here
 	defer wg.Done()
 
     // Wait until group info is updated
@@ -560,68 +643,12 @@ func (c *Client) SendMessage(recipientJID string, message string) error {
 }
 
 func (c *Client) HandleCommand(cmd string, args []string) {
-	switch cmd {
-	case "send":
-		if len(args) < 2 {
-			c.Logger.Error("Usage: send <jid> <message>")
-			return
-		}
-		recipientJID := args[0]
-		message := strings.Join(args[1:], " ")
-		err := c.SendMessage(recipientJID, message)
+	if handler, exists := c.commandHandlers[cmd]; exists {
+		err := handler(args)
 		if err != nil {
-			c.Logger.Errorf("Failed to send message: %v", err)
+			c.Logger.Errorf("Error executing command %s: %v", cmd, err)
 		}
-	case "pair-phone":
-		if len(args) < 1 {
-			c.Logger.Error("Usage: pair-phone <number>")
-			return
-		}
-		if !c.WAClient.IsConnected() {
-			c.Logger.Error("Not connected to WhatsApp")
-			return
-		}
-		if c.WAClient.IsLoggedIn() {
-			c.Logger.Info("Already paired")
-			return
-		}
-		linkingCode, err := c.WAClient.PairPhone(args[0], true, whatsmeow.PairClientUnknown, "Firefox (Android)")
-		if err != nil {
-			c.Logger.Errorf("Error pairing phone: %v", err)
-			return
-		}
-		c.Logger.Infof(`Linking code: "%s"`, linkingCode)
-	case "logout":
-		err := c.WAClient.Logout()
-		if err != nil {
-			c.Logger.Errorf("Error logging out: %v", err)
-		} else {
-			c.Logger.Infof("Successfully logged out")
-		}
-	case "appstate":
-		if len(args) < 1 {
-			c.Logger.Error("Usage: appstate <types...>")
-			return
-		}
-		names := []appstate.WAPatchName{appstate.WAPatchName(args[0])}
-		if args[0] == "all" {
-			names = []appstate.WAPatchName{
-				appstate.WAPatchRegular,
-				appstate.WAPatchRegularHigh,
-				appstate.WAPatchRegularLow,
-				appstate.WAPatchCriticalUnblockLow,
-				appstate.WAPatchCriticalBlock,
-			}
-		}
-		resync := len(args) > 1 && args[1] == "resync"
-		for _, name := range names {
-			err := c.WAClient.FetchAppState(name, resync, false)
-			if err != nil {
-				c.Logger.Errorf("Failed to sync app state: %v", err)
-			}
-		}
-	// Add other command cases here
-	default:
+	} else {
 		c.Logger.Warnf("Unknown command: %s", cmd)
 	}
 }
@@ -738,6 +765,28 @@ func (c *Client) HandleHTTPRequest(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Method not supported", http.StatusMethodNotAllowed)
 		return
 	}
+}
+
+func (c *Client) sendHttpPost(jsonData string, path string) {
+	client := &http.Client{
+		Timeout: 1 * time.Second,
+	}
+
+	jsonBody := []byte(jsonData)
+	bodyReader := bytes.NewReader(jsonBody)
+
+	requestURL := fmt.Sprintf("http://localhost:%d%s", c.Config.HTTPPort, path)
+	req, err := http.NewRequest(http.MethodPost, requestURL, bodyReader)
+	if err != nil {
+		c.Logger.Errorf("Failed to create HTTP request: %v", err)
+		return
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		c.Logger.Errorf("Failed to send HTTP POST request: %v", err)
+		return
+	}
+	defer resp.Body.Close()
 }
 
 func (c *Client) SendMessage(recipientJID string, message string) error {
