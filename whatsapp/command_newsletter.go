@@ -82,8 +82,8 @@ func (c *Client) handleGetNewsletterMessagesCommand(args []string) error {
 		return nil
 	}
 	count := 100
-	var err error
 	if len(args) > 1 {
+		var err error
 		count, err = strconv.Atoi(args[1])
 		if err != nil {
 			c.Logger.Errorf("Invalid count: %v", err)
