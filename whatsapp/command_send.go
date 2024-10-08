@@ -3,7 +3,6 @@ package whatsapp
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
 	"fmt"
 	"image"
 	"image/jpeg"
@@ -12,21 +11,19 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/nfnt/resize"
 	"github.com/otiai10/opengraph/v2"
-	"github.com/zRedShift/mimemagic"
-	"go.mau.fi/util/random"
 	"go.mau.fi/whatsmeow"
 	"go.mau.fi/whatsmeow/types"
-	waBinary "go.mau.fi/whatsmeow/binary/waBinary"
+	"wahelper/utils"
+
+	"go.mau.fi/whatsmeow/types/events"
 	waProto "go.mau.fi/whatsmeow/binary/proto"
 	"google.golang.org/protobuf/proto"
-	"wahelper/utils"
 )
 
 func (c *Client) handleSendCommand(args []string) error {
@@ -50,7 +47,7 @@ func (c *Client) handleSendCommand(args []string) error {
 
 func (c *Client) handleSendListCommand(args []string) error {
 	if len(args) < 9 {
-		c.Logger.Errorf("Usage: sendlist <jid> <title> <text> <footer> <button text> <sub title> -- <heading 1> <description 1> / ...")
+		c.Logger.Errorf("Usage: sendlist <jid> <title> <text> <footer> <button text> <section title> -- <row title> <row description> / ...")
 		return nil
 	}
 	recipient, ok := utils.ParseJID(args[0])
@@ -59,9 +56,29 @@ func (c *Client) handleSendListCommand(args []string) error {
 	}
 
 	if args[6] != "--" {
-		c.Logger.Errorf("Missing -- separator")
-		c.Logger.Errorf("Usage: sendlist <jid> <title> <text> <footer> <button text> <sub title> -- <heading 1> <description 1> / ...")
+		c.Logger.Errorf("Missing '--' separator")
 		return nil
+	}
+
+	sectionTitle := args[5]
+	items := args[7:]
+	if len(items)%3 != 0 {
+		c.Logger.Errorf("Invalid number of items; each item should be in the format: <title> <description> /")
+		return nil
+	}
+
+	rows := []*waProto.ListMessage_Row{}
+	for i := 0; i < len(items); i += 3 {
+		if items[i+2] != "/" {
+			c.Logger.Errorf("Missing '/' separator after item %d", i/3+1)
+			return nil
+		}
+		row := &waProto.ListMessage_Row{
+			RowId:       proto.String(fmt.Sprintf("id%d", i/3+1)),
+			Title:       proto.String(items[i]),
+			Description: proto.String(items[i+1]),
+		}
+		rows = append(rows, row)
 	}
 
 	msg := &waProto.Message{
@@ -73,31 +90,11 @@ func (c *Client) handleSendListCommand(args []string) error {
 			ListType:    waProto.ListMessage_SINGLE_SELECT.Enum(),
 			Sections: []*waProto.ListMessage_Section{
 				{
-					Title: proto.String(args[5]),
-					Rows:  []*waProto.ListMessage_Row{},
+					Title: proto.String(sectionTitle),
+					Rows:  rows,
 				},
 			},
 		},
-	}
-
-	items := args[7:]
-
-	if len(items)%3 != 0 {
-		c.Logger.Errorf("Invalid number of items")
-		return nil
-	}
-
-	for i := 0; i < len(items); i += 3 {
-		if items[i+2] != "/" {
-			c.Logger.Errorf("Missing '/' separator at position %d", i+2)
-			return nil
-		}
-		newRow := &waProto.ListMessage_Row{
-			RowId:       proto.String(fmt.Sprintf("id%d", i/3+1)),
-			Title:       proto.String(items[i]),
-			Description: proto.String(items[i+1]),
-		}
-		msg.ListMessage.Sections[0].Rows = append(msg.ListMessage.Sections[0].Rows, newRow)
 	}
 
 	resp, err := c.WAClient.SendMessage(context.Background(), recipient, msg)
@@ -110,20 +107,16 @@ func (c *Client) handleSendListCommand(args []string) error {
 }
 
 func (c *Client) handleSendPollCommand(args []string) error {
-	if len(args) < 7 {
-		c.Logger.Errorf("Usage: sendpoll <jid> <max answers> <question> -- <option 1> / <option 2> / ...")
+	if len(args) < 4 {
+		c.Logger.Errorf("Usage: sendpoll <jid> <question> -- <option 1> / <option 2> / ...")
 		return nil
 	}
 	recipient, ok := utils.ParseJID(args[0])
 	if !ok {
 		return nil
 	}
-	maxAnswers, err := strconv.Atoi(args[1])
-	if err != nil {
-		c.Logger.Errorf("Number of max answers must be an integer")
-		return nil
-	}
-	remainingArgs := strings.Join(args[2:], " ")
+
+	remainingArgs := strings.Join(args[1:], " ")
 	question, optionsStr, found := strings.Cut(remainingArgs, "--")
 	if !found {
 		c.Logger.Errorf("Missing '--' separator")
@@ -135,7 +128,8 @@ func (c *Client) handleSendPollCommand(args []string) error {
 		options[i] = strings.TrimSpace(options[i])
 	}
 
-	resp, err := c.WAClient.SendMessage(context.Background(), recipient, c.WAClient.BuildPollCreation(question, options, maxAnswers))
+	msg := c.WAClient.BuildPollCreation(question, options, 0)
+	resp, err := c.WAClient.SendMessage(context.Background(), recipient, msg)
 	if err != nil {
 		c.Logger.Errorf("Error sending poll message: %v", err)
 	} else {
@@ -156,66 +150,40 @@ func (c *Client) handleSendLinkCommand(args []string) error {
 
 	text := ""
 	if len(args) > 2 {
-		text = "\n\n" + strings.Join(args[2:], " ")
+		text = strings.Join(args[2:], " ")
 	}
 
 	ogp, err := opengraph.Fetch(args[1])
-	if err != nil || ogp.Title == "" || ogp.Description == "" || len(ogp.Image) == 0 || ogp.Image[0].URL == "" {
-		c.Logger.Errorf("Could not fetch Open Graph data: %s", err)
-		msg := &waProto.Message{ExtendedTextMessage: &waProto.ExtendedTextMessage{
-			Text:         proto.String(args[1] + text),
+	if err != nil {
+		c.Logger.Errorf("Could not fetch Open Graph data: %v", err)
+	}
+
+	var jpegBytes []byte
+	if ogp != nil && len(ogp.Image) > 0 {
+		ogp.ToAbs()
+		resp, err := http.Get(ogp.Image[0].URL)
+		if err == nil {
+			defer resp.Body.Close()
+			jpegBytes, _ = io.ReadAll(resp.Body)
+		}
+	}
+
+	msg := &waProto.Message{
+		ExtendedTextMessage: &waProto.ExtendedTextMessage{
+			Text:         proto.String(args[1] + "\n\n" + text),
 			CanonicalUrl: proto.String(args[1]),
 			MatchedText:  proto.String(args[1]),
-		}}
-		resp, err := c.WAClient.SendMessage(context.Background(), recipient, msg)
-		if err != nil {
-			c.Logger.Errorf("Error sending link message: %v", err)
-		} else {
-			c.Logger.Infof("Link message sent (server timestamp: %s)", resp.Timestamp)
-		}
-		return nil
+			Title:        proto.String(ogp.Title),
+			Description:  proto.String(ogp.Description),
+			JpegThumbnail: func() []byte {
+				if len(jpegBytes) > 0 {
+					return jpegBytes
+				}
+				return nil
+			}(),
+		},
 	}
 
-	ogp.ToAbs()
-	data, err := http.Get(ogp.Image[0].URL)
-	if err != nil || data.StatusCode != http.StatusOK {
-		c.Logger.Errorf("Could not fetch thumbnail data")
-		return nil
-	}
-
-	jpegBytes, err := io.ReadAll(data.Body)
-	data.Body.Close()
-	if err != nil {
-		c.Logger.Errorf("Could not read thumbnail data: %s", err)
-		return nil
-	}
-
-	config, _, err := image.DecodeConfig(bytes.NewReader(jpegBytes))
-	if err != nil {
-		c.Logger.Errorf("Could not decode image config: %s", err)
-		return nil
-	}
-
-	thumbnailResp, err := c.WAClient.Upload(context.Background(), jpegBytes, whatsmeow.MediaImage)
-	if err != nil {
-		c.Logger.Errorf("Failed to upload thumbnail: %v", err)
-		return nil
-	}
-
-	msg := &waProto.Message{ExtendedTextMessage: &waProto.ExtendedTextMessage{
-		Text:                proto.String(args[1] + text),
-		Title:               proto.String(ogp.Title),
-		CanonicalUrl:        proto.String(args[1]),
-		MatchedText:         proto.String(args[1]),
-		Description:         proto.String(ogp.Description),
-		JpegThumbnail:       jpegBytes,
-		ThumbnailDirectPath: proto.String(thumbnailResp.DirectPath),
-		ThumbnailSha256:     thumbnailResp.FileSHA256,
-		ThumbnailEncSha256:  thumbnailResp.FileEncSHA256,
-		ThumbnailWidth:      proto.Uint32(uint32(config.Width)),
-		ThumbnailHeight:     proto.Uint32(uint32(config.Height)),
-		MediaKey:            thumbnailResp.MediaKey,
-	}}
 	resp, err := c.WAClient.SendMessage(context.Background(), recipient, msg)
 	if err != nil {
 		c.Logger.Errorf("Error sending link message: %v", err)
@@ -245,7 +213,7 @@ func (c *Client) handleSendDocumentCommand(args []string) error {
 		return nil
 	}
 	caption := ""
-	if len(args) > 3 && args[3] != "" {
+	if len(args) > 3 {
 		caption = args[3]
 	}
 	mimeType := http.DetectContentType(data)
@@ -291,7 +259,6 @@ func (c *Client) handleSendVideoCommand(args []string) error {
 	thumbnail, err := createThumbnail(args[1])
 	if err != nil {
 		c.Logger.Errorf("Error creating thumbnail: %v", err)
-		return nil
 	}
 
 	uploaded, err := c.WAClient.Upload(context.Background(), data, whatsmeow.MediaVideo)
@@ -320,9 +287,9 @@ func (c *Client) handleSendVideoCommand(args []string) error {
 	return nil
 }
 
-func createThumbnail(videoPath string) ([]byte, error) {
+func createThumbnail(mediaPath string) ([]byte, error) {
 	outBuf := new(bytes.Buffer)
-	cmd := exec.Command("ffmpeg", "-y", "-i", videoPath, "-vframes", "1", "-q:v", "2", "-f", "mjpeg", "pipe:1")
+	cmd := exec.Command("ffmpeg", "-y", "-i", mediaPath, "-vframes", "1", "-q:v", "2", "-f", "mjpeg", "pipe:1")
 	cmd.Stdout = outBuf
 	if err := cmd.Run(); err != nil {
 		return nil, err
@@ -415,7 +382,6 @@ func (c *Client) handleSendImageCommand(args []string) error {
 	thumbnail, err := createThumbnail(args[1])
 	if err != nil {
 		c.Logger.Errorf("Error creating thumbnail: %v", err)
-		return nil
 	}
 
 	uploaded, err := c.WAClient.Upload(context.Background(), data, whatsmeow.MediaImage)
