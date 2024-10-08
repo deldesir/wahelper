@@ -2,7 +2,6 @@ package whatsapp
 
 import (
 	"context"
-	"fmt"
 	"strings"
 
 	"go.mau.fi/whatsmeow/types"
