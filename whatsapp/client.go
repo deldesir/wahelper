@@ -21,16 +21,15 @@ import (
 	"sync/atomic"
 	"time"
 
-	// "github.com/jessevdk/go-flags"
-	// "github.com/mattn/go-sqlite3"
-	// "github.com/otiai10/opengraph/v2"
+	"github.com/jessevdk/go-flags"
+	"github.com/mattn/go-sqlite3"
+	"github.com/otiai10/opengraph/v2"
 	"github.com/sirupsen/logrus"
 	"github.com/zRedShift/mimemagic"
 	"go.mau.fi/util/random"
 	"go.mau.fi/whatsmeow"
 	"go.mau.fi/whatsmeow/appstate"
 	waBinary "go.mau.fi/whatsmeow/binary"
-    // waCommon "go.mau.fi/whatsmeow/proto/waCommon"
 	waCompanionReg "go.mau.fi/whatsmeow/proto/waCompanionReg"
 	waE2E "go.mau.fi/whatsmeow/proto/waE2E"
 	waProto "go.mau.fi/whatsmeow/proto/waProto"
@@ -46,7 +45,7 @@ import (
 
 type Client struct {
 	WAClient         *whatsmeow.Client
-	Logger           *logrus.Logger
+	Logger           waLog.Logger
 	Config           *Config
 	IsConnected      bool
 	DeviceID         string
@@ -102,29 +101,27 @@ func NewClient(config *Config) (*Client, error) {
 		}
 	}
 
-	log := logrus.New()
-	log.Level = logrus.InfoLevel
-	if config.DebugLogs {
-		log.Level = logrus.DebugLevel
-	}
+	// Initialize logging
+	logger := waLog.Stdout("Main", config.LogLevel, true)
+
 	dbLog := waLog.Stdout("Database", config.LogLevel, true)
 	storeContainer, err := sqlstore.New(config.DBDialect, config.DBAddress, dbLog)
 	if err != nil {
-		log.Errorf("Failed to connect to database: %v", err)
+		logger.Errorf("Failed to connect to database: %v", err)
 		return nil, err
 	}
 
 	device, err := storeContainer.GetFirstDevice()
 	if err != nil {
-		log.Errorf("Failed to get device: %v", err)
+		logger.Errorf("Failed to get device: %v", err)
 		return nil, err
 	}
 
-	waClient := whatsmeow.NewClient(device, waLog.Stdout("Client", config.LogLevel, true))
+	waClient := whatsmeow.NewClient(device, logger)
 
 	client := &Client{
 		WAClient:        waClient,
-		Logger:          log,
+		Logger:          logger,
 		Config:          config,
 		PairRejectChan:  make(chan bool, 1),
 		commandHandlers: make(map[string]func(args []string) error),
@@ -133,7 +130,6 @@ func NewClient(config *Config) (*Client, error) {
 	client.registerCommands()
 
 	client.CurrentDir, _ = os.Getwd()
-	// os.RemoveAll(filepath.Join(client.CurrentDir, ".tmp"))
 	client.FFmpegScriptPath = filepath.Join(filepath.Dir(client.CurrentDir), "wahelper", "ffmpeg", "ffmpeg")
 
 	return client, nil
@@ -767,28 +763,6 @@ func (c *Client) HandleHTTPRequest(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (c *Client) sendHttpPost(jsonData string, path string) {
-	client := &http.Client{
-		Timeout: 1 * time.Second,
-	}
-
-	jsonBody := []byte(jsonData)
-	bodyReader := bytes.NewReader(jsonBody)
-
-	requestURL := fmt.Sprintf("http://localhost:%d%s", c.Config.HTTPPort, path)
-	req, err := http.NewRequest(http.MethodPost, requestURL, bodyReader)
-	if err != nil {
-		c.Logger.Errorf("Failed to create HTTP request: %v", err)
-		return
-	}
-	resp, err := client.Do(req)
-	if err != nil {
-		c.Logger.Errorf("Failed to send HTTP POST request: %v", err)
-		return
-	}
-	defer resp.Body.Close()
-}
-
 func (c *Client) SendMessage(recipientJID string, message string) error {
 	recipient, ok := utils.ParseJID(recipientJID)
 	if !ok {
@@ -796,7 +770,7 @@ func (c *Client) SendMessage(recipientJID string, message string) error {
 		return fmt.Errorf("invalid JID")
 	}
 	msg := &waProto.Message{Conversation: proto.String(message)}
-	resp, err := c.WAClient.SendMessage(context.Background(), recipient, "", msg)
+	resp, err := c.WAClient.SendMessage(context.Background(), recipient, msg)
 	if err != nil {
 		c.Logger.Errorf("Error sending message: %v", err)
 		return err
