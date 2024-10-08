@@ -1,10 +1,9 @@
 package whatsapp
 
 import (
-	"bufio"
 	"context"
 	"fmt"
-	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -12,7 +11,6 @@ import (
 	"go.mau.fi/whatsmeow/types"
 	"go.mau.fi/whatsmeow/types/events"
 	"wahelper/utils"
-	"strconv"
 )
 
 func (c *Client) handlePairPhoneCommand(args []string) error {
@@ -21,7 +19,10 @@ func (c *Client) handlePairPhoneCommand(args []string) error {
 		return nil
 	}
 
-	qrChan, _ := c.WAClient.GetQRChannel(context.Background())
+	qrChan, cancel := c.WAClient.GetQRChannel(context.Background())
+	defer cancel()
+
+	c.Logger.Infof("Connecting to WhatsApp...")
 	err := c.WAClient.Connect()
 	if err != nil {
 		c.Logger.Errorf("Failed to connect: %v", err)
